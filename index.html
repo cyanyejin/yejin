@@ -1603,10 +1603,14 @@ function renderTab(){
       :'<div class="empty">고객이 공유 페이지에서 남긴 코멘트가 여기 표시됩니다.</div>';
   }
   else if(curTab==='share'){
+    const base=location.pathname.replace(/[^/]*$/,'');
     const url=`${location.origin}${location.pathname}?share=${p.share_token}`;
+    const portalUrl=`${location.origin}${base}portal.html?share=${p.share_token}`;
     body.innerHTML=`<div class="field"><label>고객 공유 링크 (보기 + 코멘트)</label>
       <div style="display:flex;gap:8px"><input id="shareUrl" value="${url}" readonly><button class="btn-a btn-sm" onclick="copyShare()">복사</button></div></div>
-      <div style="font-size:12px;color:var(--sub);line-height:1.7">이 링크를 받은 고객은 로그인 없이 <b>공유 켜진 일정</b>과 진행 상태를 보고, 코멘트를 남길 수 있습니다. 견적·금액·다른 프로젝트는 보이지 않습니다.<br>공유하고 싶지 않은 일정은 스케줄 탭에서 '공유' 체크를 해제하세요.</div>`;
+      <div class="field" style="margin-top:14px"><label>🎯 홍보 리포트 · 고객 포털 (콘텐츠·메타광고·자료실)</label>
+        <div style="display:flex;gap:8px"><input id="portalUrl" value="${portalUrl}" readonly><button class="btn-a btn-sm" onclick="copyPortal()">복사</button><button class="btn-p btn-sm" onclick="window.open(el('portalUrl').value,'_blank')">열기</button></div></div>
+      <div style="font-size:12px;color:var(--sub);line-height:1.7">위 <b>공유 링크</b>는 일정·진행상태·코멘트용 간단 페이지입니다. 아래 <b>홍보 리포트</b>는 콘텐츠 스케줄·발행물 다운로드·메타 광고 예산·자료실이 포함된 고객 전용 포털입니다. (같은 프로젝트 데이터를 공유합니다)<br>공유하고 싶지 않은 일정은 스케줄 탭에서 '공유' 체크를 해제하세요.</div>`;
   }
 }
 // ===== 스케줄 보기(목록/칸반) + 체크리스트 =====
@@ -2196,6 +2200,7 @@ async function updSchedule(id,field,val){
 }
 async function delSchedule(id){ await sb.from('schedules').delete().eq('id',id); await loadAll(); renderTab(); }
 function copyShare(){ const i=el('shareUrl'); i.select(); navigator.clipboard.writeText(i.value); alert('링크가 복사되었습니다.'); }
+function copyPortal(){ const i=el('portalUrl'); i.select(); navigator.clipboard.writeText(i.value); alert('홍보 리포트 링크가 복사되었습니다.'); }
 
 // ===== 보고서(Storage) =====
 async function uploadReport(){
