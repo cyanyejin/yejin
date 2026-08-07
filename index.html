@@ -349,6 +349,7 @@ table.q-items td.a{text-align:right;padding-right:8px;}
       <div id="pdProgress" style="margin:6px 0 18px"></div>
       <div class="tabs" id="pdTabs">
         <button class="on" onclick="switchTab('sched',this)">스케줄 · 과업</button>
+        <button onclick="switchTab('promo',this)">📸 홍보 콘텐츠</button>
         <button onclick="switchTab('settle',this)">정산</button>
         <button onclick="switchTab('docs',this)">문서</button>
         <button onclick="switchTab('refs',this)">레퍼런스</button>
@@ -461,7 +462,7 @@ async function startApp(){
 
 // ===== 데이터 로드 =====
 async function loadAll(){
-  const [cl,qu,qi,pr,sc,cm,rp,pm,ck,ex,tk,dc,rf,ma,ps,pt,jt,pf,pff] = await Promise.all([
+  const [cl,qu,qi,pr,sc,cm,rp,pm,ck,ex,tk,dc,rf,ma,ps,pt,jt,pf,pff,tac] = await Promise.all([
     sb.from('clients').select('*').order('created_at',{ascending:false}),
     sb.from('quotes').select('*').order('created_at',{ascending:false}),
     sb.from('quote_items').select('*'),
@@ -481,6 +482,7 @@ async function loadAll(){
     sb.from('project_tags').select('*').order('sort_order'),
     sb.from('portfolio').select('*').order('sort_order'),
     sb.from('portfolio_files').select('*').order('sort_order'),
+    sb.from('ta_contents').select('*').order('seq'),
   ]);
   DATA.clients=cl.data||[]; DATA.quotes=qu.data||[]; DATA.quote_items=qi.data||[];
   DATA.projects=pr.data||[]; DATA.schedules=sc.data||[]; DATA.comments=cm.data||[];
@@ -490,7 +492,7 @@ async function loadAll(){
   DATA.references=rf.data||[]; DATA.myassets=ma.data||[];
   DATA.personal=ps.data||[]; DATA.ptags=pt.data||[];
   DATA.projtags=jt.data||[]; DATA.portfolio=pf.data||[];
-  DATA.pffiles=pff.data||[];
+  DATA.pffiles=pff.data||[]; DATA.tacontents=tac.data||[];
 }
 const clientName = id => (DATA.clients.find(c=>c.id===id)||{}).name || '-';
 
@@ -1557,6 +1559,7 @@ function switchTab(t,btn){ curTab=t; el('pdTabs').querySelectorAll('button').for
 function renderTab(){
   const p=DATA.projects.find(x=>x.id===curProject);
   const body=el('tabBody');
+  if(curTab==='promo'){ renderPromo(body); return; }
   if(curTab==='sched'){
     const scs=DATA.schedules.filter(s=>s.project_id===curProject).sort((a,b)=>(a.sort_order-b.sort_order)||((a.due_date||'')>(b.due_date||'')?1:-1));
     const tasks=DATA.tasks.filter(t=>t.project_id===curProject).sort((a,b)=>a.sort_order-b.sort_order);
@@ -1613,6 +1616,62 @@ function renderTab(){
       <div style="font-size:12px;color:var(--sub);line-height:1.7">위 <b>공유 링크</b>는 일정·진행상태·코멘트용 간단 페이지입니다. 아래 <b>홍보 리포트</b>는 콘텐츠 스케줄·발행물 다운로드·메타 광고 예산·자료실이 포함된 고객 전용 포털입니다. (같은 프로젝트 데이터를 공유합니다)<br>공유하고 싶지 않은 일정은 스케줄 탭에서 '공유' 체크를 해제하세요.</div>`;
   }
 }
+// ===== 홍보 콘텐츠 (포털 ta_contents 공유 · 양방향 자동 연동) =====
+const PROMO_STATUS={planned:'미발행',scheduled:'예약',published:'발행',revision:'보완요청'};
+function renderPromo(body){
+  const list=(DATA.tacontents||[]).filter(c=>c.project_id===curProject).sort((a,b)=>((a.seq||0)-(b.seq||0)));
+  const p=DATA.projects.find(x=>x.id===curProject);
+  const base=location.pathname.replace(/[^/]*$/,'');
+  const portalUrl=`${location.origin}${base}portal.html?share=${p?p.share_token:''}`;
+  const cnt=k=>list.filter(c=>(c.status||'planned')===k).length;
+  const head=`<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+      <div style="font-size:13px;color:var(--sub)">전체 ${list.length} · 발행 ${cnt('published')} · 예약 ${cnt('scheduled')} · 미발행 ${cnt('planned')} · 보완요청 ${cnt('revision')}</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-o btn-sm" onclick="window.open('${portalUrl}','_blank')">홍보 리포트 열기</button>
+        <button class="btn-p btn-sm" onclick="promoAdd()">+ 콘텐츠 추가</button>
+      </div></div>
+    <div style="font-size:12px;color:var(--sub);margin-bottom:12px">인스타그램 콘텐츠 스케줄입니다. 여기서 수정하면 고객용 <b>홍보 리포트</b>에 즉시 반영됩니다. (같은 데이터)</div>`;
+  if(!list.length){ body.innerHTML=head+'<div class="empty">등록된 홍보 콘텐츠가 없습니다. + 콘텐츠 추가로 만들어 보세요.</div>'; return; }
+  const rows=list.map(c=>{
+    const st=Object.entries(PROMO_STATUS).map(([k,v])=>`<option value="${k}" ${(c.status||'planned')===k?'selected':''}>${v}</option>`).join('');
+    const ty=[['card','카드'],['reel','릴스']].map(([k,v])=>`<option value="${k}" ${c.ctype===k?'selected':''}>${v}</option>`).join('');
+    return [
+      `<input value="${esc(c.title||'')}" onchange="promoUpd('${c.id}','title',this.value)" style="min-width:160px">
+       <div style="font-size:11px;color:var(--sub);margin-top:3px">${esc(c.phase_label||'')} · ${esc(c.category||'')}</div>`,
+      `<select onchange="promoUpd('${c.id}','ctype',this.value)" style="width:auto">${ty}</select>`,
+      `<input type="date" value="${c.publish_date||''}" onchange="promoUpd('${c.id}','publish_date',this.value||null)" style="width:150px">`,
+      `<select onchange="promoUpd('${c.id}','status',this.value)" style="width:auto">${st}</select>`,
+      `<input value="${esc(c.drive_url||'')}" placeholder="구글 드라이브 링크" onchange="promoUpd('${c.id}','drive_url',this.value.trim()||null)" style="min-width:150px">`,
+      `<button class="link-btn" style="color:var(--red)" onclick="promoDelete('${c.id}')">삭제</button>`
+    ];
+  });
+  body.innerHTML=head+tableHTML(['콘텐츠','유형','발행일','상태','드라이브 링크',''],rows);
+}
+async function promoUpd(id,field,val){
+  const patch={[field]:val};
+  if(field==='status') patch.published=(val==='published');
+  const {error}=await sb.from('ta_contents').update(patch).eq('id',id);
+  if(error){ alert('저장 실패: '+error.message); return; }
+  const c=(DATA.tacontents||[]).find(x=>x.id===id); if(c) Object.assign(c,patch);
+  renderTab(); renderProgress();
+}
+async function promoDelete(id){
+  if(!confirm('이 홍보 콘텐츠를 삭제할까요?\n고객용 홍보 리포트에서도 함께 사라집니다.'))return;
+  const {error}=await sb.from('ta_contents').delete().eq('id',id);
+  if(error){ alert('삭제 실패: '+error.message); return; }
+  DATA.tacontents=(DATA.tacontents||[]).filter(x=>x.id!==id);
+  renderTab();
+}
+async function promoAdd(){
+  const list=(DATA.tacontents||[]).filter(c=>c.project_id===curProject);
+  const maxSeq=list.reduce((m,c)=>Math.max(m,c.seq||0),0);
+  const row={id:'mg_'+Date.now(),project_id:curProject,phase:'post',phase_label:'오픈 후',seq:maxSeq+1,ctype:'card',category:'기타',title:'새 콘텐츠',descr:'',status:'planned',published:false};
+  const {error}=await sb.from('ta_contents').insert(row);
+  if(error){ alert('추가 실패: '+error.message); return; }
+  (DATA.tacontents=DATA.tacontents||[]).push(row);
+  renderTab();
+}
+
 // ===== 스케줄 보기(목록/칸반) + 체크리스트 =====
 let schedView='list';
 function setSchedView(v){ schedView=v; renderTab(); }
