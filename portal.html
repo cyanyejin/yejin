@@ -235,15 +235,17 @@
           <div class="upload-zone"><div class="em">📊</div><div class="ut">메타 광고 리포트 업로드</div><div class="us">메타 광고관리자에서 내려받은 CSV 또는 Excel(.xlsx) 리포트를 올리면<br>캠페인별 집행액·도달·클릭을 자동으로 집계합니다</div><button class="btn primary" id="metaUploadBtn">파일 선택</button><input type="file" id="metaFile" accept=".csv,.xlsx,.xls" style="display:none"><div class="upload-log" id="uploadLog"></div></div>
         </div>
         <div class="panel admin-only" style="display:none" id="budgetPanel">
-          <div class="panel-h"><span class="t"><span class="dot"></span>총 예산 설정</span><span class="sub">고객에게 보이는 총 광고 예산입니다</span></div>
+          <div class="panel-h"><span class="t"><span class="dot"></span>예산 추가</span><span class="sub">추가할 때마다 아래 내역에 기록되고, 총 예산은 합계로 계산됩니다</span></div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <input type="number" id="budgetInput" placeholder="예: 20000000" style="flex:1;min-width:180px;border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:13.5px;font-family:inherit">
-            <span style="font-size:13px;color:var(--soft)">원</span>
-            <span id="budgetWon" style="font-size:12.5px;color:var(--brand-text);font-weight:700"></span>
-            <button class="btn primary sm" id="budgetSave">저장</button>
+            <input type="number" id="budgetInput" placeholder="추가 금액 (원)" style="flex:1;min-width:150px;border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:13.5px;font-family:inherit">
+            <span id="budgetWon" style="font-size:12.5px;color:var(--brand-text);font-weight:700;min-width:70px"></span>
+            <input type="text" id="budgetMemo" placeholder="메모 (선택): 예) 2차 충전" style="flex:1;min-width:140px;border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:13.5px;font-family:inherit">
+            <input type="date" id="budgetDate" style="border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:13.5px;font-family:inherit">
+            <button class="btn primary sm" id="budgetSave">+ 추가</button>
           </div>
         </div>
         <div class="kpi-row" id="metaKpi"></div>
+        <div class="panel"><div class="panel-h"><span class="t"><span class="dot"></span>예산 추가 내역</span><span class="sub" id="budgetTotalSub"></span></div><table class="fin" id="budgetLogTable"></table></div>
         <div class="panel"><div class="panel-h"><span class="t"><span class="meta-logo">M</span>캠페인별 집행 현황</span><span class="sub" id="metaUpdated"></span></div><div id="campaigns"></div></div>
         <div class="panel"><div class="panel-h"><span class="t"><span class="dot"></span>집행 요약</span></div><table class="fin" id="metaSummary"></table></div>
       </div>
@@ -319,8 +321,9 @@ const DEFAULT_SHARE_TOKEN="32be29199060a52541974e0ef880ac84";              // �
 const _params=new URLSearchParams(location.search);
 const SHARE_TOKEN=_params.get("share")||DEFAULT_SHARE_TOKEN;
 let PROJECT_ID=null,PROJECT=null;
-let CONTENTS=[],BUDGET=[],SUMMARY={},RESOURCES=[],isAdmin=false,tab="all",current=null,editing=false,editingRes=null,calYear=2026,calMonth=8;
+let CONTENTS=[],BUDGET=[],SUMMARY={},RESOURCES=[],BUDGETLOG=[],isAdmin=false,tab="all",current=null,editing=false,editingRes=null,calYear=2026,calMonth=8;
 let typeFilter="all",phaseFilter="all",sortByDate=false;
+function totalBudget(){return BUDGETLOG.length?BUDGETLOG.reduce((a,x)=>a+(x.amount||0),0):parseInt(SUMMARY.total_budget||"20000000");}
 function fmtMD(d){if(!d)return"";const p=String(d).split("-");return p.length===3?`${+p[1]}.${+p[2]}`:d;}
 async function resolveProject(){
   try{const {data}=await sb.rpc("get_shared_project",{token:SHARE_TOKEN});
@@ -343,14 +346,15 @@ function esc(s){return (s||"").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
 function pubDate(it){ return it.publish_date || DATES[it.id] || ""; }
 
 async function loadAll(){
-  const [c,b,s,rs]=await Promise.all([
+  const [c,b,s,rs,bl]=await Promise.all([
     sb.from("ta_contents").select("*").eq("project_id",PROJECT_ID).order("seq"),
     sb.from("ta_meta_budget").select("*").eq("project_id",PROJECT_ID).order("seq"),
     sb.from("ta_summary").select("*").eq("project_id",PROJECT_ID),
-    sb.from("ta_resources").select("*").eq("project_id",PROJECT_ID).order("seq")]);
+    sb.from("ta_resources").select("*").eq("project_id",PROJECT_ID).order("seq"),
+    sb.from("ta_budget_log").select("*").eq("project_id",PROJECT_ID).order("spent_on")]);
   CONTENTS=(c.data||[]).map(x=>({...x,status:x.status||(x.published?"published":"planned")}));
   BUDGET=b.data||[];SUMMARY={};(s.data||[]).forEach(r=>SUMMARY[r.key]=r.value);
-  RESOURCES=rs.data||[];
+  RESOURCES=rs.data||[];BUDGETLOG=bl.data||[];
   renderOverview();renderCalendar();renderSchedule();renderMeta();renderResources();
 }
 function renderOverview(){
@@ -358,7 +362,7 @@ function renderOverview(){
   document.getElementById("ov-pub").innerHTML=`${pub} <small>/ 45</small>`;
   document.getElementById("ov-bar").style.width=pct+"%";
   document.getElementById("ov-rev").innerHTML=`${CONTENTS.filter(d=>d.status==="revision").length} <small>건</small>`;
-  const spent=BUDGET.reduce((a,c)=>a+(c.spent||0),0),tot=parseInt(SUMMARY.total_budget||"20000000");
+  const spent=BUDGET.reduce((a,c)=>a+(c.spent||0),0),tot=totalBudget();
   document.getElementById("ov-budget").innerHTML=`${won(spent)} <small>/ ${won(tot)}만</small>`;
   document.getElementById("ov-bbar").style.width=Math.round(spent/tot*100)+"%";
   document.getElementById("ov-reach").innerHTML=`${Math.round(parseInt(SUMMARY.reach||"0")/1000)} <small>천</small>`;
@@ -623,7 +627,7 @@ document.getElementById("r-delete").onclick=async()=>{
 
 /* ===== 메타 (v3과 동일) ===== */
 function renderMeta(){
-  const spent=BUDGET.reduce((a,c)=>a+(c.spent||0),0),tot=parseInt(SUMMARY.total_budget||"20000000");
+  const spent=BUDGET.reduce((a,c)=>a+(c.spent||0),0),tot=totalBudget();
   document.getElementById("metaKpi").innerHTML=`
     <div class="kpi"><div class="l">총 예산</div><div class="n">${won(tot)}<small>만원</small></div></div>
     <div class="kpi"><div class="l">집행액</div><div class="n">${won(spent)}<small>만원</small></div><div class="bar-bg"><div class="bar-fg" style="width:${Math.round(spent/tot*100)}%"></div></div></div>
@@ -639,8 +643,15 @@ function renderMeta(){
     <tr><td class="label">링크 클릭</td><td class="r">${parseInt(SUMMARY.link_clicks||0).toLocaleString()}</td></tr>
     <tr><td class="label">전환</td><td class="r">${parseInt(SUMMARY.conversions||0).toLocaleString()}</td></tr>
     <tr><td class="label">클릭당 비용 (CPC)</td><td class="r">${SUMMARY.cpc||"–"}원</td></tr>`;
-  const bi=document.getElementById("budgetInput");
-  if(bi&&document.activeElement!==bi){bi.value=tot;const bw=document.getElementById("budgetWon");if(bw)bw.textContent="= "+won(tot)+"만원";}
+  const bd=document.getElementById("budgetDate");if(bd&&!bd.value)bd.value=new Date().toISOString().slice(0,10);
+  const blog=BUDGETLOG.slice().sort((a,b)=>((a.spent_on||"")<(b.spent_on||"")?-1:1));
+  const btbl=document.getElementById("budgetLogTable");
+  if(btbl){
+    btbl.innerHTML=blog.length
+      ? blog.map(e=>`<tr><td class="label">${(e.spent_on||"").replace(/-/g,".")}${e.memo?` · ${esc(e.memo)}`:""}</td><td class="r">${won(e.amount)}만원${isAdmin?` <span class="row-edit" style="cursor:pointer;margin-left:8px" onclick="delBudgetLog('${e.id}')">삭제</span>`:""}</td></tr>`).join("")
+      : `<tr><td class="label" style="color:var(--faint)">추가된 예산 내역이 없습니다.</td><td></td></tr>`;
+    const sub=document.getElementById("budgetTotalSub");if(sub)sub.textContent=`총 ${won(tot)}만원`;
+  }
 }
 const COL={campaign:["캠페인 이름","캠페인","캠페인명","광고 세트 이름","광고 세트"],spent:["지출 금액 (KRW)","지출 금액","지출금액","금액","소진 금액","소진금액","비용","지출"],reach:["도달","도달수","도달 수"],impr:["노출","노출수","노출 수"],clicks:["링크 클릭","링크 클릭수","클릭","클릭수","링크클릭"],conv:["구매","결과","전환","전환수","랜딩 페이지 조회"]};
 function findCol(h,al){for(const a of al){const i=h.findIndex(x=>x&&x.replace(/\s/g,"")===a.replace(/\s/g,""));if(i>=0)return i;}for(const a of al){const i=h.findIndex(x=>x&&x.replace(/\s/g,"").includes(a.replace(/\s/g,"")));if(i>=0)return i;}return -1;}
@@ -651,13 +662,23 @@ document.getElementById("budgetInput").addEventListener("input",e=>{
 });
 document.getElementById("budgetSave").onclick=async()=>{
   const v=parseInt(document.getElementById("budgetInput").value||"0");
-  if(!v||v<0){toast("올바른 예산 금액을 입력하세요");return;}
-  const {error}=await sb.from("ta_summary").upsert({project_id:PROJECT_ID,key:"total_budget",value:String(v)},{onConflict:"project_id,key"});
-  if(error){toast("저장 실패: "+error.message);return;}
-  SUMMARY.total_budget=String(v);
+  if(!v||v<0){toast("추가할 금액을 입력하세요");return;}
+  const memo=document.getElementById("budgetMemo").value.trim()||null;
+  const spent_on=document.getElementById("budgetDate").value||new Date().toISOString().slice(0,10);
+  const {data,error}=await sb.from("ta_budget_log").insert({project_id:PROJECT_ID,amount:v,memo,spent_on}).select();
+  if(error){toast("추가 실패: "+error.message);return;}
+  if(data&&data[0])BUDGETLOG.push(data[0]);
+  document.getElementById("budgetInput").value="";document.getElementById("budgetMemo").value="";document.getElementById("budgetWon").textContent="";
   renderMeta();renderOverview();
-  toast("총 예산이 저장되었습니다");
+  toast(`예산 ${won(v)}만원이 추가되었습니다`);
 };
+async function delBudgetLog(id){
+  if(!confirm("이 예산 추가 내역을 삭제할까요?\n총 예산에서 해당 금액이 빠집니다."))return;
+  const {error}=await sb.from("ta_budget_log").delete().eq("id",id);
+  if(error){toast("삭제 실패: "+error.message);return;}
+  BUDGETLOG=BUDGETLOG.filter(x=>x.id!==id);
+  renderMeta();renderOverview();toast("삭제되었습니다");
+}
 document.getElementById("metaUploadBtn").onclick=()=>document.getElementById("metaFile").click();
 document.getElementById("metaFile").onchange=async e=>{
   const f=e.target.files[0];if(!f)return;const log=document.getElementById("uploadLog");log.textContent="파일 읽는 중...";
@@ -693,7 +714,7 @@ const loginOverlay=document.getElementById("loginOverlay");
 document.getElementById("roleToggle").onclick=()=>{if(isAdmin){sb.auth.signOut().then(()=>setAdmin(false));}else loginOverlay.classList.add("on");};
 document.getElementById("loginCancel").onclick=()=>loginOverlay.classList.remove("on");
 document.getElementById("loginGo").onclick=async()=>{const email=document.getElementById("loginEmail").value.trim(),pw=document.getElementById("loginPw").value;const {error}=await sb.auth.signInWithPassword({email,password:pw});if(error){document.getElementById("loginErr").style.display="block";return;}loginOverlay.classList.remove("on");document.getElementById("loginErr").style.display="none";setAdmin(true);};
-function setAdmin(v){isAdmin=v;document.body.classList.toggle("is-admin",v);document.getElementById("avatarBox").textContent=v?"최":"고객";document.getElementById("roleName").textContent=v?"최예진":"고객사";document.getElementById("roleDesc").textContent=v?"트루애드 관리자":"열람 전용";document.getElementById("roleToggle").textContent=v?"로그아웃":"트루애드 관리자 로그인";document.getElementById("modePill").textContent=v?"관리자 모드":"고객사 열람";document.getElementById("modePill").className="pill "+(v?"admin":"brand");document.getElementById("uploadPanel").style.display=v?"block":"none";document.getElementById("budgetPanel").style.display=v?"block":"none";document.getElementById("addContentBtn").style.display=v?"inline-block":"none";document.getElementById("addResBtn").style.display=v?"inline-block":"none";renderSchedule();renderResources();}
+function setAdmin(v){isAdmin=v;document.body.classList.toggle("is-admin",v);document.getElementById("avatarBox").textContent=v?"최":"고객";document.getElementById("roleName").textContent=v?"최예진":"고객사";document.getElementById("roleDesc").textContent=v?"트루애드 관리자":"열람 전용";document.getElementById("roleToggle").textContent=v?"로그아웃":"트루애드 관리자 로그인";document.getElementById("modePill").textContent=v?"관리자 모드":"고객사 열람";document.getElementById("modePill").className="pill "+(v?"admin":"brand");document.getElementById("uploadPanel").style.display=v?"block":"none";document.getElementById("budgetPanel").style.display=v?"block":"none";document.getElementById("addContentBtn").style.display=v?"inline-block":"none";document.getElementById("addResBtn").style.display=v?"inline-block":"none";renderSchedule();renderResources();renderMeta();}
 
 /* ===== AI ===== */
 let aiPlan=null;
