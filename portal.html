@@ -85,6 +85,14 @@
   .tab.active{background:#fff;color:var(--brand-text);box-shadow:0 1px 2px rgba(20,25,45,.08)}
   .tab .cnt{font-size:11px;color:var(--faint);margin-left:4px;font-weight:700}
   .tab.active .cnt{color:var(--brand)}
+  .filters{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px;padding:0 2px}
+  .filters .fgrp{display:flex;align-items:center;gap:7px}
+  .filters .flabel{font-size:11.5px;color:var(--faint);font-weight:700}
+  .filters .chips{display:inline-flex;gap:6px;flex-wrap:wrap}
+  .chip{border:1px solid var(--line);background:#fff;color:var(--soft);padding:5px 11px;border-radius:99px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:.12s}
+  .chip:hover{border-color:var(--brand);color:var(--brand-text)}
+  .chip.on{background:var(--brand-light);border-color:var(--brand-light);color:var(--brand-text)}
+  .chip.sort.on{background:var(--ink);border-color:var(--ink);color:#fff}
   .sched{width:100%;border-collapse:collapse}
   .sched th{text-align:left;font-size:11.5px;color:var(--faint);font-weight:700;padding:9px 10px;border-bottom:1px solid var(--line);text-transform:uppercase}
   .sched td{padding:11px 10px;font-size:13.5px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
@@ -197,7 +205,7 @@
 
       <div class="screen" id="schedule">
         <div class="page-head">
-          <div><h1>콘텐츠 스케줄</h1><span class="meta" id="schedSub">상태별로 콘텐츠를 관리합니다 · 행을 클릭하면 상세·수정</span></div>
+          <div><h1>콘텐츠 스케줄</h1><span class="meta" id="schedSub">상태·유형·단계로 거르고 발행일순으로 볼 수 있습니다 · 행 클릭 시 상세·수정</span></div>
           <button class="btn primary sm admin-only" id="addContentBtn" style="display:none">+ 콘텐츠 추가</button>
         </div>
         <div class="tabs" id="statusTabs">
@@ -206,6 +214,15 @@
           <div class="tab" data-s="scheduled">예약<span class="cnt" id="c-scheduled">0</span></div>
           <div class="tab" data-s="published">발행<span class="cnt" id="c-published">0</span></div>
           <div class="tab" data-s="revision">보완요청<span class="cnt" id="c-revision">0</span></div>
+        </div>
+        <div class="filters">
+          <div class="fgrp"><span class="flabel">유형</span><span class="chips" id="typeChips">
+            <button class="chip on" data-type="all">전체</button>
+            <button class="chip" data-type="card">카드</button>
+            <button class="chip" data-type="reel">릴스</button>
+          </span></div>
+          <div class="fgrp"><span class="flabel">단계</span><span class="chips" id="phaseChips"></span></div>
+          <div class="fgrp" style="margin-left:auto"><button class="chip sort" id="sortToggle">발행일순 ↑</button></div>
         </div>
         <div class="panel" style="padding:6px 20px">
           <table class="sched"><thead><tr><th style="width:100px">단계</th><th>콘텐츠</th><th class="hide-sm" style="width:64px">유형</th><th class="hide-sm" style="width:96px">발행일</th><th style="width:92px">상태</th><th style="width:70px;text-align:right"></th></tr></thead><tbody id="schedBody"></tbody></table>
@@ -294,6 +311,7 @@ const _params=new URLSearchParams(location.search);
 const SHARE_TOKEN=_params.get("share")||DEFAULT_SHARE_TOKEN;
 let PROJECT_ID=null,PROJECT=null;
 let CONTENTS=[],BUDGET=[],SUMMARY={},RESOURCES=[],isAdmin=false,tab="all",current=null,editing=false,editingRes=null,calYear=2026,calMonth=8;
+let typeFilter="all",phaseFilter="all",sortByDate=false;
 function fmtMD(d){if(!d)return"";const p=String(d).split("-");return p.length===3?`${+p[1]}.${+p[2]}`:d;}
 async function resolveProject(){
   try{const {data}=await sb.rpc("get_shared_project",{token:SHARE_TOKEN});
@@ -363,9 +381,17 @@ function renderSchedule(){
   ["all","planned","scheduled","published","revision"].forEach(s=>{
     document.getElementById("c-"+s).textContent = s==="all"?CONTENTS.length:CONTENTS.filter(c=>c.status===s).length;
   });
+  const phaseHost=document.getElementById("phaseChips");
+  if(phaseHost){
+    const seen=[];CONTENTS.forEach(c=>{if(c.phase_label&&!seen.includes(c.phase_label))seen.push(c.phase_label);});
+    if(phaseFilter!=="all"&&!seen.includes(phaseFilter))phaseFilter="all";
+    phaseHost.innerHTML=`<button class="chip${phaseFilter==="all"?" on":""}" data-phase="all">전체</button>`+
+      seen.map(p=>`<button class="chip${phaseFilter===p?" on":""}" data-phase="${esc(p)}">${esc(p)}</button>`).join("");
+  }
   const body=document.getElementById("schedBody");body.innerHTML="";
-  const list=CONTENTS.filter(c=>tab==="all"||c.status===tab);
-  if(list.length===0){body.innerHTML=`<tr><td colspan="6" style="color:var(--faint);padding:20px 10px">해당 상태의 콘텐츠가 없습니다.</td></tr>`;return;}
+  let list=CONTENTS.filter(c=>(tab==="all"||c.status===tab)&&(typeFilter==="all"||c.ctype===typeFilter)&&(phaseFilter==="all"||c.phase_label===phaseFilter));
+  if(sortByDate)list=list.slice().sort((a,b)=>{const da=pubDate(a)||"9999-99-99",db=pubDate(b)||"9999-99-99";return da<db?-1:da>db?1:((a.seq||0)-(b.seq||0));});
+  if(list.length===0){body.innerHTML=`<tr><td colspan="6" style="color:var(--faint);padding:20px 10px">조건에 맞는 콘텐츠가 없습니다.</td></tr>`;return;}
   list.forEach(it=>{
     const tr=document.createElement("tr");tr.className="clickable";
     const canFile=it.status==="published";
@@ -384,6 +410,23 @@ function renderSchedule(){
 document.getElementById("statusTabs").addEventListener("click",e=>{
   const t=e.target.closest(".tab");if(!t)return;
   tab=t.dataset.s;document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));t.classList.add("active");renderSchedule();
+});
+document.getElementById("typeChips").addEventListener("click",e=>{
+  const c=e.target.closest(".chip");if(!c)return;
+  typeFilter=c.dataset.type;
+  document.querySelectorAll("#typeChips .chip").forEach(x=>x.classList.toggle("on",x===c));
+  renderSchedule();
+});
+document.getElementById("phaseChips").addEventListener("click",e=>{
+  const c=e.target.closest(".chip");if(!c)return;
+  phaseFilter=c.dataset.phase;renderSchedule();
+});
+document.getElementById("sortToggle").addEventListener("click",()=>{
+  sortByDate=!sortByDate;
+  const b=document.getElementById("sortToggle");
+  b.classList.toggle("on",sortByDate);
+  b.textContent=sortByDate?"발행일순 ✓":"발행일순 ↑";
+  renderSchedule();
 });
 
 /* ===== 모달: 보기 + 편집 ===== */
