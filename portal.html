@@ -346,6 +346,10 @@
         <span>고객사에게 이 자료를 <b>공개</b> — 체크를 해제하면 관리자에게만 보입니다</span>
       </label>
     </div>
+    <div class="field"><label>열람 비밀번호 (선택)</label>
+      <input id="r-pw" placeholder="비워두면 누구나 열람 · 입력하면 비밀번호 아는 사람만 열람">
+      <div style="font-size:11px;color:var(--faint);margin-top:5px;line-height:1.5">예: 견적서처럼 일부 담당자만 봐야 하는 자료에 설정하세요. 자료 목록엔 🔒 표시가 붙고, 다운로드 시 비밀번호를 물어봅니다.</div>
+    </div>
     <div class="modal-actions">
       <button class="btn" id="r-cancel">취소</button>
       <button class="btn primary" id="r-save">저장</button>
@@ -631,18 +635,27 @@ function renderResources(){
   list.forEach(r=>{
     const tr=document.createElement("tr");
     const priv=r.is_public===false;
+    const locked=!!(r.access_pw&&r.access_pw.length);
     let right="";
     if(r.drive_url) right+=`<button class="btn primary sm r-dl">다운받기</button>`;
     else right+=`<span class="dl-hint none">준비 중</span>`;
     if(isAdmin) right+=`<button class="btn sm r-ed" style="margin-left:6px">수정</button>`;
-    const badge=isAdmin?(priv
-      ? `<span class="st planned" style="margin-left:8px">비공개</span>`
-      : `<span class="st published" style="margin-left:8px">공개</span>`):"";
+    let badge="";
+    if(isAdmin) badge+=priv?`<span class="st planned" style="margin-left:8px">비공개</span>`:`<span class="st published" style="margin-left:8px">공개</span>`;
+    if(locked) badge+=`<span class="st scheduled" style="margin-left:6px">🔒 비밀번호</span>`;
     tr.innerHTML=`
       <td class="ctitle"${priv?' style="opacity:.6"':''}>${esc(r.title)}${badge}${r.descr?`<div style="font-size:11.5px;color:var(--faint);font-weight:400;margin-top:2px">${esc(r.descr)}</div>`:""}</td>
       <td class="hide-sm cat-b">${esc(r.category||"–")}</td>
       <td style="text-align:right;white-space:nowrap">${right}</td>`;
-    const dl=tr.querySelector(".r-dl");if(dl)dl.onclick=()=>window.open(r.drive_url,"_blank","noopener");
+    const dl=tr.querySelector(".r-dl");
+    if(dl)dl.onclick=()=>{
+      // 관리자이거나 · 잠금 없거나 · 이번 세션에 이미 인증했으면 바로 열기
+      if(isAdmin||!locked||sessionStorage.getItem("res_"+r.id)==="1"){window.open(r.drive_url,"_blank","noopener");return;}
+      const v=prompt(`'${r.title}' 자료의 열람 비밀번호를 입력하세요.`);
+      if(v===null)return;
+      if(v===r.access_pw){sessionStorage.setItem("res_"+r.id,"1");window.open(r.drive_url,"_blank","noopener");}
+      else toast("비밀번호가 올바르지 않습니다");
+    };
     const ed=tr.querySelector(".r-ed");if(ed)ed.onclick=()=>openResModal(r);
     body.appendChild(tr);
   });
@@ -656,6 +669,7 @@ function openResModal(r){
   document.getElementById("r-descr").value=r&&r.descr?r.descr:"";
   document.getElementById("r-drive").value=r&&r.drive_url?r.drive_url:"";
   document.getElementById("r-public").checked = r ? (r.is_public!==false) : true;   // 신규는 기본 공개
+  document.getElementById("r-pw").value = r&&r.access_pw ? r.access_pw : "";
   document.getElementById("r-delete").style.display=r?"block":"none";
   resOverlay.classList.add("on");
 }
@@ -666,7 +680,7 @@ document.getElementById("addResBtn").onclick=()=>openResModal(null);
 document.getElementById("r-save").onclick=async()=>{
   const title=document.getElementById("r-title").value.trim();
   if(!title){toast("제목을 입력하세요");return;}
-  const rec={title,category:document.getElementById("r-category").value.trim()||null,descr:document.getElementById("r-descr").value.trim()||null,drive_url:document.getElementById("r-drive").value.trim()||null,is_public:document.getElementById("r-public").checked};
+  const rec={title,category:document.getElementById("r-category").value.trim()||null,descr:document.getElementById("r-descr").value.trim()||null,drive_url:document.getElementById("r-drive").value.trim()||null,is_public:document.getElementById("r-public").checked,access_pw:document.getElementById("r-pw").value.trim()||null};
   if(editingRes){
     const {error}=await sb.from("ta_resources").update(rec).eq("id",editingRes.id);
     if(error){toast("저장 실패: "+error.message);return;}
