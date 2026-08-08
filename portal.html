@@ -231,7 +231,7 @@
       <div class="screen on" id="overview">
         <div class="page-head"><div><h1>운영 현황 · 일정표</h1><span class="meta">인스타그램 콘텐츠 45개 · 메타 광고 운영 · 실시간 진행 현황</span></div></div>
         <div class="kpi-row">
-          <div class="kpi"><div class="l">콘텐츠 발행</div><div class="n" id="ov-pub">– <small>/ 45</small></div><div class="bar-bg"><div class="bar-fg" id="ov-bar" style="width:0"></div></div></div>
+          <div class="kpi"><div class="l" id="ov-pub-l">콘텐츠 발행</div><div class="n" id="ov-pub">– <small>/ 45</small></div><div class="bar-bg"><div class="bar-fg" id="ov-bar" style="width:0"></div></div></div>
           <div class="kpi"><div class="l">보완 요청</div><div class="n" id="ov-rev">– <small>건</small></div></div>
           <div class="kpi"><div class="l">메타 예산 집행</div><div class="n" id="ov-budget">– <small>만원</small></div><div class="bar-bg"><div class="bar-fg" id="ov-bbar" style="width:0"></div></div></div>
           <div class="kpi"><div class="l">누적 도달</div><div class="n" id="ov-reach">– <small>천</small></div></div>
@@ -240,6 +240,10 @@
           <div class="cal-head"><div class="cal-nav"><button id="calPrev">‹</button><button id="calNext">›</button></div><div class="cal-title" id="calTitle">2026년 8월</div><div style="width:66px"></div></div>
           <div class="cal-grid" id="calGrid"></div>
           <div class="cal-legend"><span><i class="lg-dot" style="background:var(--brand-light)"></i>카드</span><span><i class="lg-dot" style="background:#2A1F3A"></i>릴스</span><span><i class="lg-dot" style="background:var(--rev-bg)"></i>보완요청</span><span><i class="lg-dot" style="background:var(--ok)"></i>발행완료(흐리게)</span></div>
+        </div>
+        <div class="panel" id="schedPanel" style="display:none">
+          <div class="panel-h"><span class="t"><span class="dot"></span>진행 일정</span><span class="sub" id="schedSubCnt"></span></div>
+          <div class="table-wrap"><table class="sched"><tbody id="ovSchedBody"></tbody></table></div>
         </div>
       </div>
 
@@ -392,7 +396,8 @@ const DEFAULT_SHARE_TOKEN="32be29199060a52541974e0ef880ac84";              // �
 const _params=new URLSearchParams(location.search);
 const SHARE_TOKEN=_params.get("share")||DEFAULT_SHARE_TOKEN;
 let PROJECT_ID=null,PROJECT=null;
-let CONTENTS=[],BUDGET=[],SUMMARY={},RESOURCES=[],BUDGETLOG=[],isAdmin=false,tab="all",current=null,editing=false,editingRes=null,calYear=2026,calMonth=8;
+let CONTENTS=[],BUDGET=[],SUMMARY={},RESOURCES=[],BUDGETLOG=[],SCHEDULES=[],isAdmin=false,tab="all",current=null,editing=false,editingRes=null,calYear=2026,calMonth=8;
+const SCHED_STATUS={"예정":{c:"planned"},"진행":{c:"scheduled"},"완료":{c:"published"},"보류":{c:"revision"}};
 let typeFilter="all",phaseFilter="all",sortByDate=false;
 function totalBudget(){return BUDGETLOG.length?BUDGETLOG.reduce((a,x)=>a+(x.amount||0),0):parseInt(SUMMARY.total_budget||"20000000");}
 function fmtMD(d){if(!d)return"";const p=String(d).split("-");return p.length===3?`${+p[1]}.${+p[2]}`:d;}
@@ -417,26 +422,60 @@ function esc(s){return (s||"").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
 function pubDate(it){ return it.publish_date || DATES[it.id] || ""; }
 
 async function loadAll(){
-  const [c,b,s,rs,bl]=await Promise.all([
+  const [c,b,s,rs,bl,sch]=await Promise.all([
     sb.from("ta_contents").select("*").eq("project_id",PROJECT_ID).order("seq"),
     sb.from("ta_meta_budget").select("*").eq("project_id",PROJECT_ID).order("seq"),
     sb.from("ta_summary").select("*").eq("project_id",PROJECT_ID),
     sb.from("ta_resources").select("*").eq("project_id",PROJECT_ID).order("seq"),
-    sb.from("ta_budget_log").select("*").eq("project_id",PROJECT_ID).order("spent_on")]);
+    sb.from("ta_budget_log").select("*").eq("project_id",PROJECT_ID).order("spent_on"),
+    sb.from("schedules").select("*").eq("project_id",PROJECT_ID).eq("is_shared",true).order("due_date")]);
   CONTENTS=(c.data||[]).map(x=>({...x,status:x.status||(x.published?"published":"planned")}));
   BUDGET=b.data||[];SUMMARY={};(s.data||[]).forEach(r=>SUMMARY[r.key]=r.value);
-  RESOURCES=rs.data||[];BUDGETLOG=bl.data||[];
+  RESOURCES=rs.data||[];BUDGETLOG=bl.data||[];SCHEDULES=sch.data||[];
   renderOverview();renderCalendar();renderSchedule();renderMeta();renderResources();
 }
 function renderOverview(){
-  const pub=CONTENTS.filter(d=>d.status==="published").length,pct=Math.round(pub/45*100);
-  document.getElementById("ov-pub").innerHTML=`${pub} <small>/ 45</small>`;
-  document.getElementById("ov-bar").style.width=pct+"%";
-  document.getElementById("ov-rev").innerHTML=`${CONTENTS.filter(d=>d.status==="revision").length} <small>건</small>`;
+  const total=CONTENTS.length;
+  if(total>0){
+    // 콘텐츠가 있는 프로젝트: 콘텐츠 발행 기준
+    const pub=CONTENTS.filter(d=>d.status==="published").length,pct=Math.round(pub/total*100);
+    document.getElementById("ov-pub-l").textContent="콘텐츠 발행";
+    document.getElementById("ov-pub").innerHTML=`${pub} <small>/ ${total}</small>`;
+    document.getElementById("ov-bar").style.width=pct+"%";
+    document.getElementById("ov-rev").innerHTML=`${CONTENTS.filter(d=>d.status==="revision").length} <small>건</small>`;
+  }else{
+    // 콘텐츠 없이 스케줄로 운영되는 프로젝트: 일정 진행 기준
+    const done=SCHEDULES.filter(s=>s.status==="완료").length,tot=SCHEDULES.length,pct=tot?Math.round(done/tot*100):0;
+    document.getElementById("ov-pub-l").textContent="일정 진행";
+    document.getElementById("ov-pub").innerHTML=`${done} <small>/ ${tot||"–"}</small>`;
+    document.getElementById("ov-bar").style.width=pct+"%";
+    const upcoming=SCHEDULES.filter(s=>s.status!=="완료").length;
+    document.getElementById("ov-rev").innerHTML=`${upcoming} <small>건 예정</small>`;
+    document.querySelector("#overview .kpi:nth-child(2) .l").textContent="남은 일정";
+  }
   const spent=BUDGET.reduce((a,c)=>a+(c.spent||0),0),tot=totalBudget();
   document.getElementById("ov-budget").innerHTML=`${won(spent)} <small>/ ${won(tot)}만</small>`;
-  document.getElementById("ov-bbar").style.width=Math.round(spent/tot*100)+"%";
+  document.getElementById("ov-bbar").style.width=(tot?Math.round(spent/tot*100):0)+"%";
   document.getElementById("ov-reach").innerHTML=`${Math.round(parseInt(SUMMARY.reach||"0")/1000)} <small>천</small>`;
+  renderOverviewSchedule();
+}
+function renderOverviewSchedule(){
+  const panel=document.getElementById("schedPanel"),body=document.getElementById("ovSchedBody");
+  if(!panel||!body)return;
+  if(!SCHEDULES.length){panel.style.display="none";return;}
+  panel.style.display="block";
+  const done=SCHEDULES.filter(s=>s.status==="완료").length;
+  const sub=document.getElementById("schedSubCnt");if(sub)sub.textContent=`완료 ${done} / 전체 ${SCHEDULES.length}`;
+  body.innerHTML="";
+  SCHEDULES.forEach(s=>{
+    const cls=(SCHED_STATUS[s.status]||{}).c||"planned";
+    const tr=document.createElement("tr");
+    tr.innerHTML=`
+      <td class="ctitle">${esc(s.title||"-")}</td>
+      <td class="hide-sm cat-b" style="width:110px">${fmtMD(s.due_date)||"-"}</td>
+      <td style="width:90px;text-align:right"><span class="st ${cls}">${esc(s.status||"예정")}</span></td>`;
+    body.appendChild(tr);
+  });
 }
 function renderCalendar(){
   document.getElementById("calTitle").textContent=`${calYear}년 ${calMonth}월`;
@@ -445,15 +484,21 @@ function renderCalendar(){
   const first=new Date(calYear,calMonth-1,1).getDay(),days=new Date(calYear,calMonth,0).getDate();
   const byId={};CONTENTS.forEach(c=>byId[c.id]=c);
   const evByDate={};CONTENTS.forEach(c=>{const dt=pubDate(c);if(dt)(evByDate[dt]=evByDate[dt]||[]).push(c.id);});
+  const schByDate={};SCHEDULES.forEach(s=>{if(s.due_date)(schByDate[s.due_date]=schByDate[s.due_date]||[]).push(s);});
+  const today=new Date().toISOString().slice(0,10);
   for(let i=0;i<first;i++){const e=document.createElement("div");e.className="cal-cell empty";grid.appendChild(e);}
   for(let d=1;d<=days;d++){
     const mm=String(calMonth).padStart(2,"0"),dd=String(d).padStart(2,"0"),key=`${calYear}-${mm}-${dd}`;
     const dow=new Date(calYear,calMonth-1,d).getDay();
-    const cell=document.createElement("div");cell.className="cal-cell"+(dow===0?" sun":"")+(key==="2026-08-06"?" today":"");
+    const cell=document.createElement("div");cell.className="cal-cell"+(dow===0?" sun":"")+(key===today?" today":"");
     cell.innerHTML=`<div class="cal-date">${d}</div>`;
     const evs=(evByDate[key]||[]);
     evs.slice(0,3).forEach(id=>{const c=byId[id];if(!c)return;const ev=document.createElement("div");let cls=c.ctype;if(c.status==="revision")cls="rev";ev.className=`cal-ev ${cls}`+(c.status==="published"?" done":"");ev.textContent=c.title;ev.onclick=()=>openModal(c);cell.appendChild(ev);});
     if(evs.length>3){const m=document.createElement("div");m.className="cal-more";m.textContent=`+${evs.length-3}건`;cell.appendChild(m);}
+    // 스케줄·과업 일정 표시
+    const schs=(schByDate[key]||[]);
+    schs.slice(0,3).forEach(s=>{const ev=document.createElement("div");ev.className="cal-ev card"+(s.status==="완료"?" done":"");ev.style.background="#E6EEF9";ev.style.color="#1B39B8";ev.textContent="• "+(s.title||"");cell.appendChild(ev);});
+    if(schs.length>3){const m=document.createElement("div");m.className="cal-more";m.textContent=`+${schs.length-3}건`;cell.appendChild(m);}
     grid.appendChild(cell);
   }
 }
