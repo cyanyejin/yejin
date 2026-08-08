@@ -693,8 +693,8 @@ function openResModal(r){
   document.getElementById("r-public").checked = r ? (r.is_public!==false) : true;   // 신규는 기본 공개
   document.getElementById("r-pw").value = r&&r.access_pw ? r.access_pw : "";
   const fileEl=document.getElementById("r-file");fileEl.value="";
-  const cur=document.getElementById("r-file-cur");
-  if(r&&r.file_path){cur.style.display="block";cur.textContent="📎 현재 업로드된 파일: "+r.file_path.split("/").pop().replace(/^\d+_/,"");}
+  const cur=document.getElementById("r-file-cur");cur.style.color="var(--brand-text)";
+  if(r&&r.file_path){cur.style.display="block";cur.textContent="📎 업로드된 파일이 있습니다 · 교체하려면 새 파일을 선택하세요";}
   else{cur.style.display="none";cur.textContent="";}
   document.getElementById("r-delete").style.display=r?"block":"none";
   resOverlay.classList.add("on");
@@ -713,10 +713,11 @@ document.getElementById("r-save").onclick=async()=>{
   if(file){
     if(file.size>50*1024*1024){toast("파일이 너무 큽니다 (최대 50MB)");return;}
     saveBtn.disabled=true;saveBtn.textContent="업로드 중…";
-    const safe=file.name.replace(/[^\w.\-가-힣]/g,"_");
-    const path=`resources/${PROJECT_ID}/${Date.now()}_${safe}`;
-    const {error:upErr}=await sb.storage.from("ta-content").upload(path,file,{upsert:true});
-    if(upErr){saveBtn.disabled=false;saveBtn.textContent="저장";toast("파일 업로드 실패: "+upErr.message);return;}
+    // 저장 경로는 영문/숫자만 (한글·공백·특수문자 키는 스토리지가 거부함). 원본 이름은 제목으로 보존.
+    const ext=(file.name.split(".").pop()||"file").replace(/[^A-Za-z0-9]/g,"").toLowerCase()||"file";
+    const path=`resources/${PROJECT_ID}/${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
+    const {error:upErr}=await sb.storage.from("ta-content").upload(path,file,{upsert:true,contentType:file.type||undefined});
+    if(upErr){saveBtn.disabled=false;saveBtn.textContent="저장";const cur=document.getElementById("r-file-cur");cur.style.display="block";cur.style.color="#D6533F";cur.textContent="업로드 실패: "+(upErr.message||upErr);toast("파일 업로드 실패");return;}
     const {data:{publicUrl}}=sb.storage.from("ta-content").getPublicUrl(path);
     // 편집 시 기존 업로드 파일 교체면 이전 파일 정리
     if(editingRes&&editingRes.file_path&&editingRes.file_path!==path){await sb.storage.from("ta-content").remove([editingRes.file_path]);}
