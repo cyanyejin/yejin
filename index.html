@@ -1108,16 +1108,39 @@ function renderQuoteToHidden(id){
   if(doc){ doc.style.width='794px'; doc.style.boxSizing='border-box'; doc.style.overflow='hidden'; }
   return {q,items,host};
 }
-async function downloadQuotePDF(id){
-  const {q,host}=renderQuoteToHidden(id);
-  await new Promise(r=>setTimeout(r,120));
-  const doc=host.querySelector('#quoteDoc');
-  const canvas=await html2canvas(doc,{scale:2,backgroundColor:'#fff',width:794,windowWidth:794});
-  const img=canvas.toDataURL('image/png');
+// 요소 안의 이미지(로고·도장 등)가 실제로 로드될 때까지 대기 (최대 3초)
+function waitImages(root){
+  const imgs=[...root.querySelectorAll('img')];
+  return Promise.all(imgs.map(im=>(im.complete&&im.naturalWidth)?Promise.resolve()
+    :new Promise(res=>{ im.onload=im.onerror=()=>res(); setTimeout(res,3000); })));
+}
+// DOM 요소를 A4 PDF로 저장 (긴 내용은 여러 페이지로 자동 분할)
+async function elementToPDF(doc, filename){
+  if(!doc) throw new Error('렌더 대상을 찾을 수 없습니다.');
+  await waitImages(doc);
+  await new Promise(r=>setTimeout(r,60));
+  const canvas=await html2canvas(doc,{scale:2,backgroundColor:'#fff',width:794,windowWidth:794,useCORS:true,imageTimeout:0});
   const {jsPDF}=window.jspdf; const pdf=new jsPDF('p','mm','a4');
-  const m=8,uw=210-m*2,ih=canvas.height*uw/canvas.width;
-  pdf.addImage(img,'PNG',m,m,uw,ih);
-  pdf.save(`트루애드_견적서_${q.quote_number}.pdf`);
+  const pw=210, ph=297, m=8, uw=pw-m*2;
+  const pxPerMm=canvas.width/uw;                 // 캔버스 px → 문서 mm 비율
+  const pageHpx=Math.floor((ph-m*2)*pxPerMm);    // 한 페이지에 담을 캔버스 높이(px)
+  let y=0, first=true;
+  while(y<canvas.height){
+    const sliceH=Math.min(pageHpx, canvas.height-y);
+    const part=document.createElement('canvas');
+    part.width=canvas.width; part.height=sliceH;
+    part.getContext('2d').drawImage(canvas,0,y,canvas.width,sliceH,0,0,canvas.width,sliceH);
+    if(!first) pdf.addPage();
+    pdf.addImage(part.toDataURL('image/png'),'PNG',m,m,uw,sliceH/pxPerMm);
+    y+=sliceH; first=false;
+  }
+  pdf.save(filename);
+}
+async function downloadQuotePDF(id){
+  try{
+    const {q,host}=renderQuoteToHidden(id);
+    await elementToPDF(host.querySelector('#quoteDoc'), `트루애드_견적서_${q.quote_number||''}.pdf`);
+  }catch(e){ console.error(e); alert('PDF 생성 실패: '+(e&&e.message?e.message:e)); }
 }
 function downloadQuoteExcel(id){
   const q=DATA.quotes.find(x=>x.id===id);
@@ -1136,6 +1159,118 @@ function downloadQuoteExcel(id){
   ws['!cols']=[{wch:6},{wch:26},{wch:12},{wch:8},{wch:12},{wch:14},{wch:10},{wch:16}];
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'견적서');
   XLSX.writeFile(wb,`트루애드_견적서_${q.quote_number}.xlsx`);
+}
+
+// ===== 결과보고서 자동생성 (홍보 리포트 데이터 → PDF) =====
+const CTYPE_LABEL={card:'카드뉴스',reel:'릴스'};
+function resultReportHTML(p, cs, budget, blog, summary){
+  const man=n=>Math.round((+n||0)/10000).toLocaleString('ko-KR');   // 원 → 만원
+  const stCnt=k=>cs.filter(c=>(c.status||(c.published?'published':'planned'))===k).length;
+  const total=cs.length, pub=stCnt('published'), sch=stCnt('scheduled'), plan=stCnt('planned'), rev=stCnt('revision');
+  const pubPct=total?Math.round(pub/total*100):0;
+  const spent=budget.reduce((a,c)=>a+(+c.spent||0),0);
+  const totBudget=blog.length?blog.reduce((a,x)=>a+(+x.amount||0),0):(+summary.total_budget||0);
+  const budgetPct=totBudget?Math.round(spent/totBudget*100):0;
+  const reach=+summary.reach||0;
+  const client=clientName(p.client_id);
+  const period=(p.start_date||p.end_date)?`${fdate(p.start_date)||'-'} ~ ${fdate(p.end_date)||'-'}`:'-';
+  const today=new Date().toISOString().slice(0,10);
+  const pubList=cs.filter(c=>(c.status||(c.published?'published':'planned'))==='published')
+    .sort((a,b)=>String(a.publish_date||'').localeCompare(String(b.publish_date||'')));
+  const kpi=(l,v,s)=>`<div style="flex:1;min-width:120px;border:1px solid #e3e7ee;border-radius:10px;padding:14px 16px;background:#fafbfd">
+      <div style="font-size:12px;color:#6b7684;margin-bottom:6px">${l}</div>
+      <div style="font-size:20px;font-weight:800;color:#1f2733">${v}</div>
+      ${s?`<div style="font-size:11px;color:#6b7684;margin-top:4px">${s}</div>`:''}</div>`;
+  const cell='border:1px solid #e3e7ee;padding:7px 8px';
+  const contentRows=pubList.length?pubList.map((c,i)=>`<tr>
+      <td style="${cell};text-align:center">${i+1}</td>
+      <td style="${cell};text-align:left">${esc(c.title||'-')}<div style="font-size:11px;color:#8a94a2">${esc(c.phase_label||'')}${c.category?' · '+esc(c.category):''}</div></td>
+      <td style="${cell};text-align:center">${CTYPE_LABEL[c.ctype]||esc(c.ctype||'-')}</td>
+      <td style="${cell};text-align:center">${fdate(c.publish_date)||'-'}</td>
+    </tr>`).join('')
+    :`<tr><td colspan="4" style="${cell};text-align:center;color:#8a94a2;padding:16px">발행 완료된 콘텐츠가 없습니다.</td></tr>`;
+  const metaRows=budget.length?budget.map(c=>`<tr>
+      <td style="${cell};text-align:left">${esc(c.campaign||'-')}</td>
+      <td style="${cell};text-align:center">${esc(c.period||'-')}</td>
+      <td style="${cell};text-align:right">${man(c.spent)}만원</td>
+      <td style="${cell};text-align:right">${Math.round((+c.reach||0)/1000).toLocaleString('ko-KR')}천</td>
+    </tr>`).join('')
+    :`<tr><td colspan="4" style="${cell};text-align:center;color:#8a94a2;padding:16px">등록된 메타 광고 집행 내역이 없습니다.</td></tr>`;
+  return `<div class="quote-doc" id="reportDoc" style="font-size:13px;color:#1f2733">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1f2733;padding-bottom:14px;margin-bottom:20px">
+      <div>
+        <div style="font-size:24px;font-weight:800;letter-spacing:1px">홍보 운영 결과보고서</div>
+        <div style="font-size:13px;color:#6b7684;margin-top:6px">${esc(p.name||'-')}</div>
+      </div>
+      <div style="text-align:right"><img src="${LOGO}" style="height:34px"><div style="font-size:11px;color:#8a94a2;margin-top:6px">발행일 ${today}</div></div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:20px">
+      <tr><td style="width:90px;background:#f5f7fa;border:1px solid #e3e7ee;padding:8px 10px;font-weight:700">고객사</td><td style="border:1px solid #e3e7ee;padding:8px 10px">${esc(client)}</td>
+          <td style="width:90px;background:#f5f7fa;border:1px solid #e3e7ee;padding:8px 10px;font-weight:700">홍보 기간</td><td style="border:1px solid #e3e7ee;padding:8px 10px">${period}</td></tr>
+      <tr><td style="background:#f5f7fa;border:1px solid #e3e7ee;padding:8px 10px;font-weight:700">수행사</td><td style="border:1px solid #e3e7ee;padding:8px 10px">${SUPPLIER.name} (${SUPPLIER.mgr} · ${SUPPLIER.tel})</td>
+          <td style="background:#f5f7fa;border:1px solid #e3e7ee;padding:8px 10px;font-weight:700">서비스</td><td style="border:1px solid #e3e7ee;padding:8px 10px">온라인 홍보 대행 (SNS 콘텐츠 · 메타 광고)</td></tr>
+    </table>
+    <div style="font-size:15px;font-weight:800;margin:6px 0 12px">1. 운영 요약</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      ${kpi('총 콘텐츠', total+'건', `발행 ${pub} · 예약 ${sch} · 미발행 ${plan}`)}
+      ${kpi('발행 완료율', pubPct+'%', `${pub} / ${total}건`)}
+      ${kpi('메타 광고 집행액', man(spent)+'만원', totBudget?`예산 ${man(totBudget)}만원 · 집행률 ${budgetPct}%`:'')}
+      ${kpi('총 도달수', reach.toLocaleString('ko-KR')+'명', reach?`약 ${Math.round(reach/1000).toLocaleString('ko-KR')}천 명`:'')}
+      ${kpi('보완요청', rev+'건','고객 피드백 반영')}
+    </div>
+    <div style="font-size:15px;font-weight:800;margin:24px 0 12px">2. 콘텐츠 발행 내역</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="background:#f0f2f5">
+        <th style="border:1px solid #e3e7ee;padding:8px;width:40px">No.</th>
+        <th style="border:1px solid #e3e7ee;padding:8px;text-align:left">제목</th>
+        <th style="border:1px solid #e3e7ee;padding:8px;width:80px">유형</th>
+        <th style="border:1px solid #e3e7ee;padding:8px;width:100px">발행일</th></tr></thead>
+      <tbody>${contentRows}</tbody>
+    </table>
+    <div style="font-size:15px;font-weight:800;margin:24px 0 12px">3. 메타 광고 집행 현황</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="background:#f0f2f5">
+        <th style="border:1px solid #e3e7ee;padding:8px;text-align:left">캠페인</th>
+        <th style="border:1px solid #e3e7ee;padding:8px;width:120px">기간</th>
+        <th style="border:1px solid #e3e7ee;padding:8px;width:100px">집행액</th>
+        <th style="border:1px solid #e3e7ee;padding:8px;width:90px">도달</th></tr></thead>
+      <tbody>${metaRows}</tbody>
+      <tfoot><tr style="background:#fafbfd;font-weight:700">
+        <td colspan="2" style="border:1px solid #e3e7ee;padding:8px;text-align:right">합계</td>
+        <td style="border:1px solid #e3e7ee;padding:8px;text-align:right">${man(spent)}만원</td>
+        <td style="border:1px solid #e3e7ee;padding:8px;text-align:right">${Math.round(reach/1000).toLocaleString('ko-KR')}천</td></tr></tfoot>
+    </table>
+    <div style="margin-top:30px;padding-top:14px;border-top:1px solid #e3e7ee;font-size:11px;color:#8a94a2;text-align:center">
+      본 보고서는 ${SUPPLIER.name} 홍보 리포트 데이터를 기준으로 자동 생성되었습니다. · ${SUPPLIER.name} · ${SUPPLIER.tel}
+    </div>
+  </div>`;
+}
+async function genResultReport(){
+  const p=DATA.projects.find(x=>x.id===curProject);
+  if(!p){ alert('프로젝트를 먼저 선택하세요.'); return; }
+  const btn=el('genReportBtn'), msg=el('genReportMsg');
+  if(btn){ btn.disabled=true; }
+  if(msg){ msg.textContent='데이터를 불러오는 중…'; }
+  try{
+    const [mb,bl,sm]=await Promise.all([
+      sb.from('ta_meta_budget').select('*').eq('project_id',curProject).order('seq'),
+      sb.from('ta_budget_log').select('*').eq('project_id',curProject),
+      sb.from('ta_summary').select('*').eq('project_id',curProject)
+    ]);
+    const budget=mb.data||[], blog=bl.data||[], summary={};
+    (sm.data||[]).forEach(r=>summary[r.key]=r.value);
+    const cs=(DATA.tacontents||[]).filter(c=>c.project_id===curProject);
+    let host=el('reportRenderHost');
+    if(!host){ host=document.createElement('div'); host.id='reportRenderHost'; document.body.appendChild(host); }
+    host.style.cssText='position:fixed;left:-9999px;top:0;width:794px;background:#fff';
+    host.innerHTML=resultReportHTML(p,cs,budget,blog,summary);
+    const doc=host.querySelector('#reportDoc');
+    if(doc){ doc.style.width='794px'; doc.style.boxSizing='border-box'; }
+    if(msg){ msg.textContent='PDF 생성 중…'; }
+    await elementToPDF(doc, `트루애드_결과보고서_${(p.name||'프로젝트').replace(/[\\/:*?"<>|]/g,'_')}.pdf`);
+    if(msg){ msg.textContent='완료되었습니다 ✔'; }
+  }catch(e){ console.error(e); if(msg) msg.textContent=''; alert('결과보고서 생성 실패: '+(e&&e.message?e.message:e)); }
+  finally{ if(btn) btn.disabled=false; }
 }
 </script>
 <script>
@@ -1592,7 +1727,12 @@ function renderTab(){
   }
   else if(curTab==='report'){
     const rps=DATA.reports.filter(r=>r.project_id===curProject);
-    body.innerHTML=`<div style="margin-bottom:10px"><input type="file" id="repFile" style="width:auto;display:inline-block"><button class="btn-o btn-sm" onclick="uploadReport()">업로드</button></div>
+    body.innerHTML=`<div style="display:flex;gap:8px;align-items:center;background:#f4f8fc;border:1px dashed #b8cfe4;border-radius:8px;padding:10px 12px;margin-bottom:12px;flex-wrap:wrap">
+        <span style="font-size:12.5px;color:var(--accent);font-weight:700">📄 홍보 리포트 데이터로 결과보고서를 자동 생성합니다 (콘텐츠 발행 현황 · 메타 광고 집행 · 도달)</span>
+        <button class="btn-p btn-sm" id="genReportBtn" onclick="genResultReport()">결과보고서 자동생성 (PDF)</button>
+        <span id="genReportMsg" style="font-size:12px;color:var(--sub)"></span>
+      </div>
+      <div style="margin-bottom:10px"><input type="file" id="repFile" style="width:auto;display:inline-block"><button class="btn-o btn-sm" onclick="uploadReport()">업로드</button></div>
       ${rps.length?tableHTML(['문서명','종류','업로드',''],rps.map(r=>[
         esc(r.title),esc(r.file_type||'-'),fdate((r.uploaded_at||'').slice(0,10)),
         `<button class="link-btn" onclick="downloadReport('${r.id}')">다운로드</button><button class="link-btn" style="color:var(--red)" onclick="delReport('${r.id}')">삭제</button>`
